@@ -258,27 +258,25 @@ byte ResultingLine[MAXLINELENGTH + 1];
 
 struct TapeHeader_s
 {
-  byte LenLo1;
-  byte LenHi1;
-  byte Flag1;
-  byte HType;
-  char HName[10];
-  byte HLenLo;
-  byte HLenHi;
+  char HName[8];
+  char HType;
   byte HStartLo;
   byte HStartHi;
-  byte HBasLenLo;
-  byte HBasLenHi;
-  byte Parity1;
-  byte LenLo2;
-  byte LenHi2;
-  byte Flag2;
-} TapeHeader = {19, 0,                                                            /* Len header */
-                0,                                                                /* Flag header */
-                0, {32, 32, 32, 32, 32, 32, 32, 32, 32, 32}, 0, 0, 0, 128, 0, 0,  /* The header itself */
-                0,                                                                /* Parity header */
-                0, 0,                                                             /* Len converted BASIC */
-                255};                                                             /* Flag converted BASIC */
+  byte HLenLo;
+  byte HLenHi;
+  byte HSectorCountHi;
+  byte HSectorCountLo;
+  byte HdrChecksumLo;
+  byte HdrChecksumHi;
+} TapeHeader = {{32, 32, 32, 32, 32, 32, 32, 32},'B'};
+
+struct TapeFooter_s
+{
+  byte H80;
+  byte HAA;
+  byte AutostartLo;
+  byte AutostartHi;
+} TapeFooter = {0x80, 0xAA, 0, 0x80};
 
 int   Is48KProgram    = -1;                                                                                       /* -1 = unknown */
                                                                                                                   /*  1 = 48K     */
@@ -805,7 +803,11 @@ int PrepareLine (char *LineIn, int FileLineNo, char **FirstToken)
             !x_strnicmp (IndexIn, ":REM ", 5))
           DoingREM = TRUE;                                                          /* Signal: copy anything and everything ASCII */
       if (InString || DoingREM)
+      {
         *(IndexOut ++) = *IndexIn;
+        if (*IndexIn == ':')
+          DoingREM = FALSE;
+      }
       else
       {
         if (*IndexIn == ' ')
@@ -3001,7 +3003,7 @@ int main (int argc, char **argv)
   int   AutoStart;                                                             /* Auto-start line as provided on the command line */
   int   ObjectLength;                                                                      /* Binary length of one converted line */
   int   BlockSize        = 0;                                                                      /* Total size of the TAP block */
-  byte  Parity           = 0;                                                                             /* Overall block parity */
+  unsigned short  Parity = 0;                                                                             /* Overall block parity */
   bool  AllOk            = TRUE;
   bool  EndOfFile        = FALSE;
   bool  WriteError       = FALSE;                                                     /* Fingers crossed that this stays FALSE... */
@@ -3026,10 +3028,10 @@ int main (int argc, char **argv)
                      fprintf (ErrStream, "Invalid auto-start line number %d\n", AutoStart);
                      exit (1);
                    }
-                   TapeHeader.HStartLo = (byte)(AutoStart & 0xFF);
-                   TapeHeader.HStartHi = (byte)(AutoStart >> 8);
+                   TapeFooter.AutostartLo = (byte)(AutoStart & 0xFF);
+                   TapeFooter.AutostartHi = (byte)(AutoStart >> 8);
                    break;
-        case 's' : if (strlen (argv[Cnt] + 2) > 10)
+        case 's' : if (strlen (argv[Cnt] + 2) > 8)
                    {
                      fprintf (ErrStream, "Spectrum blockname too long \"%s\"\n", argv[Cnt] + 2);
                      exit (1);
@@ -3067,9 +3069,9 @@ int main (int argc, char **argv)
   while (-- Size > 0 && FileNameOut[Size] != '.')
     ;
   if (Size == 0)                                                                                                /* No extension ? */
-    strcat (FileNameOut, ".tap");
-  else if (strcmp (FileNameOut + Size, ".tap") && strcmp (FileNameOut + Size, ".TAP"))
-    strcpy (FileNameOut + Size, ".tap");
+    strcat (FileNameOut, ".$b");
+  else if (strcmp (FileNameOut + Size, ".$b") && strcmp (FileNameOut + Size, ".$B"))
+    strcpy (FileNameOut + Size, ".$b");
   if (!Quiet)
     printf ("Creating output file %s\n",FileNameOut);
   if ((FpIn = fopen (FileNameIn, "rt")) == NULL)
@@ -3083,7 +3085,6 @@ int main (int argc, char **argv)
     fclose (FpIn);
     exit (1);
   }
-  Parity = TapeHeader.Flag2;
   if (fwrite (&TapeHeader, 1, sizeof (struct TapeHeader_s), FpOut) < sizeof (struct TapeHeader_s))
   { AllOk = FALSE; WriteError = TRUE; }                                                        /* Write dummy header to get space */
   while (AllOk && !EndOfFile)
@@ -3174,7 +3175,7 @@ int main (int argc, char **argv)
                           InsideDEFFN = FALSE;
                         }
                         if (Token == 0xEA)                                                              /* Special exception; REM */
-                          while (*BasicIndex)                                 /* Simply copy over the remaining part of the line, */
+                          while (*BasicIndex && *BasicIndex != ':')           /* Simply copy over the remaining part of the line, */
                                                                                        /* disregarding token or number expansions */
                                                                   /* As brackets aren't tested for, the match counting stops here */
                                                               /* (a closing bracket in a REM statement will not be seen by BASIC) */
@@ -3305,8 +3306,6 @@ int main (int argc, char **argv)
           ResultingLine[2] = (byte)((ObjectLength - 4) & 0xFF);                                 /* Make sure this runs on any CPU */
           ResultingLine[3] = (byte)((ObjectLength - 4) >> 8);
           BlockSize += ObjectLength;
-          for (Cnt = 0 ; Cnt < ObjectLength ; Cnt ++)
-            Parity ^= ResultingLine[Cnt];
           if (BlockSize > 41500)                                                       /* (= 65368-23755-<some work/stack space>) */
           {
             fprintf (ErrStream, "ERROR - Object file too large at line %d!\n", BasicLineNo);
@@ -3328,22 +3327,37 @@ int main (int argc, char **argv)
   }
   if (!WriteError)                             /* Finish the TAP file no matter what went wrong, unless it was the writing itself */
   {
-    ResultingLine[0] = Parity;                                               /* Now it's time to write the 'real' header in front */
-    if (fwrite (ResultingLine, 1, 1, FpOut) < 1)
+    BlockSize += sizeof(TapeFooter);
+    if (fwrite(&TapeFooter, sizeof(TapeFooter), 1, FpOut) < 1)
     {
       perror ("ERROR - Write error");
       fclose (FpIn);
       fclose (FpOut);
       exit (1);
     }
-    TapeHeader.HLenLo = TapeHeader.HBasLenLo = (byte)(BlockSize & 0xFF);
-    TapeHeader.HLenHi = TapeHeader.HBasLenHi = (byte)(BlockSize >> 8);
-    TapeHeader.LenLo2 = (byte)((BlockSize + 2) & 0xFF);
-    TapeHeader.LenHi2 = (byte)((BlockSize + 2) >> 8);
+    if ((BlockSize % 256) != 0)
+    {
+      static char buf[256];
+      if (fwrite (buf, 256 - (BlockSize % 256), 1, FpOut) < 1)
+      {
+        perror ("ERROR - Write error");
+        fclose (FpIn);
+        fclose (FpOut);
+        exit (1);
+      }
+    }
+    /* Now it's time to write the 'real' header in front */
+    TapeHeader.HStartLo = (byte)(BlockSize & 0xFF);
+    TapeHeader.HStartHi = (byte)(BlockSize >> 8);
+    TapeHeader.HLenLo = (byte)(BlockSize & 0xFF);
+    TapeHeader.HLenHi = (byte)(BlockSize >> 8);
+    TapeHeader.HSectorCountLo = (BlockSize + 255) / 256;
+    TapeHeader.HSectorCountHi = 0;
     Parity = 0;
-    for (Cnt = 2 ; Cnt < 20 ; Cnt ++)
-      Parity ^= *((byte *)&TapeHeader + Cnt);
-    TapeHeader.Parity1 = Parity;
+    for (Cnt = 0 ; Cnt < 15; Cnt++)
+      Parity = Parity + (*((byte *)&TapeHeader + Cnt) * 257) + Cnt;
+    TapeHeader.HdrChecksumLo = (byte)(Parity & 0xFF);
+    TapeHeader.HdrChecksumHi = (byte)(Parity >> 8);
     fseek (FpOut, 0, SEEK_SET);
     if (fwrite (&TapeHeader, 1, sizeof (struct TapeHeader_s), FpOut) < sizeof (struct TapeHeader_s))
     {
