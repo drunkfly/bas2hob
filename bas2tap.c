@@ -3003,6 +3003,7 @@ int main (int argc, char **argv)
   int   AutoStart;                                                             /* Auto-start line as provided on the command line */
   int   ObjectLength;                                                                      /* Binary length of one converted line */
   int   BlockSize        = 0;                                                                      /* Total size of the TAP block */
+  int   DontHandleNumbers = FALSE;
   unsigned short  Parity = 0;                                                                             /* Overall block parity */
   bool  AllOk            = TRUE;
   bool  EndOfFile        = FALSE;
@@ -3121,6 +3122,7 @@ int main (int argc, char **argv)
         SubLineCount = 1;
         ResultIndex = ResultingLine + 4;                                              /* Reserve space for line number and length */
         HandlingDEFFN = FALSE;
+        DontHandleNumbers = FALSE;
         while (*BasicIndex && AllOk)
         {
           if (InString)
@@ -3175,6 +3177,7 @@ int main (int argc, char **argv)
                           InsideDEFFN = FALSE;
                         }
                         if (Token == 0xEA)                                                              /* Special exception; REM */
+                        {
                           while (*BasicIndex && *BasicIndex != ':')           /* Simply copy over the remaining part of the line, */
                                                                                        /* disregarding token or number expansions */
                                                                   /* As brackets aren't tested for, the match counting stops here */
@@ -3185,6 +3188,8 @@ int main (int argc, char **argv)
                               case  0 : *(ResultIndex ++) = *(BasicIndex ++); break;
                               case  1 : break;
                             }
+                          DontHandleNumbers = TRUE;
+                        }
                         break;
             }
           }
@@ -3248,7 +3253,7 @@ int main (int argc, char **argv)
                                  BasicLineNo, SubLineCount, TokenMap[Token].Token);
                         AllOk = FALSE;
                         break;
-              case  0 : switch (HandleNumbers (BasicLineNo, &BasicIndex, &ResultIndex))                             /* (No token) */
+              case  0 : switch (DontHandleNumbers ? 0 : HandleNumbers (BasicLineNo, &BasicIndex, &ResultIndex))    /* (No token) */
                         {
                           case 0 :  switch (ExpandSequences (BasicLineNo, &BasicIndex, &ResultIndex, TRUE))        /* (No number) */
                                     {
@@ -3327,7 +3332,7 @@ int main (int argc, char **argv)
   }
   if (!WriteError)                             /* Finish the TAP file no matter what went wrong, unless it was the writing itself */
   {
-    BlockSize += sizeof(TapeFooter);
+    int FullSize = BlockSize + sizeof(TapeFooter);
     if (fwrite(&TapeFooter, sizeof(TapeFooter), 1, FpOut) < 1)
     {
       perror ("ERROR - Write error");
@@ -3335,10 +3340,10 @@ int main (int argc, char **argv)
       fclose (FpOut);
       exit (1);
     }
-    if ((BlockSize % 256) != 0)
+    if ((FullSize % 256) != 0)
     {
       static char buf[256];
-      if (fwrite (buf, 256 - (BlockSize % 256), 1, FpOut) < 1)
+      if (fwrite (buf, 256 - (FullSize % 256), 1, FpOut) < 1)
       {
         perror ("ERROR - Write error");
         fclose (FpIn);
@@ -3351,7 +3356,7 @@ int main (int argc, char **argv)
     TapeHeader.HStartHi = (byte)(BlockSize >> 8);
     TapeHeader.HLenLo = (byte)(BlockSize & 0xFF);
     TapeHeader.HLenHi = (byte)(BlockSize >> 8);
-    TapeHeader.HSectorCountLo = (BlockSize + 255) / 256;
+    TapeHeader.HSectorCountLo = (FullSize + 255) / 256;
     TapeHeader.HSectorCountHi = 0;
     Parity = 0;
     for (Cnt = 0 ; Cnt < 15; Cnt++)
