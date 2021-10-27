@@ -2,7 +2,7 @@ CC=gcc
 CFLAGS=-Wall -O2
 
 all:
-	$(CC) $(CFLAGS) bas2tap.c -o bas2tap -lm
+	$(CC) $(CFLAGS) bas2tap.c -o bas2hob -lm
 
 clean:
 
